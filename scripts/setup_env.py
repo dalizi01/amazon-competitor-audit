@@ -62,10 +62,11 @@ def check_cdp():
         return True
     except Exception:
         print('%-22s 缺 CDP 端口 9222 未监听' % 'CDP 端口 9222')
-        print('         用【独立调试 profile】带调试端口启动（默认 profile 常不生效）：')
-        print('         "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-port=9222 --user-data-dir=C:\\cdp-profile')
-        print('         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\\cdp-profile')
-        print('         "C:\\<你的360路径>\\360se.exe" --remote-debugging-port=9222')
+        print('         CDP 需连「带调试端口启动」的浏览器（默认 profile 正被运行占用时，再带端口启动只会把参数转发给旧实例，端口起不来）。两种方式：')
+        print('         [复用已登录浏览器，保留登录态] 彻底退出所有浏览器窗口后，用默认 profile 带端口启动（不加 --user-data-dir）：')
+        print('           "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-port=9222')
+        print('         [独立调试 profile，不打扰在用浏览器] 需在该窗口手动登录一次（登录态持久保存）：')
+        print('           "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\\cdp-profile')
         return False
     finally:
         s.close()
