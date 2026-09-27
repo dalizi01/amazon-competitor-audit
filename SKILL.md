@@ -17,6 +17,18 @@ Python     : python3（需 openpyxl）
 脚本目录   : <skill>/scripts/
 ```
 
+**scripts/ 清单（8 个脚本）**
+
+| 脚本 | 作用 |
+|---|---|
+| `cdp360.py` | Chrome 内核浏览器 CDP 客户端（raw socket，握手不发 Origin；`Browser(port=)` 可换端口） |
+| `ss_review.py` | 评论采集：Vine / 各站点评论数 / 近30天评论数（含 `wait_ready` 探测 + Vine 扫描兜底） |
+| `ss_variants.py` | 插件「变体对比」采集：父体各变体上架时间 + 近30天销量(父体)（判定 #7 老带新、#4 刷单分母） |
+| `kdocs_sheet.py` | kdocs 写入 / 逐行校验 / 清行 / 行高（0-based；`_find_kdocs` 自动定位 CLI） |
+| `setup_env.py` | 环境自检：Python / openpyxl / kdocs 通道 / CDP / 登录态提示（`--install` 自动装 openpyxl） |
+| `xlsx_fix.py` | 修卖家精灵 xlsx 的 `editAs="undefined"`（`load_workbook_safe`） |
+| `gen_html.py` | 八点判定可视化汇总 HTML |
+
 **可移植配置（不必改代码）**
 - 浏览器路径：环境变量 `BROWSER_EXE` 指定；否则脚本自动探测 360se/chrome/msedge。
 - kdocs 访问：**优先用当前 agent 环境的 kdocs MCP 工具**（如 `mcp__jinshanwendang__*`）读写表格，不依赖 kdocs-cli。`kdocs_sheet.py` 只是 CLI 封装，仅当用命令行读写时才需要 kdocs-cli（环境变量 `KDOCS_CLI` 指定，否则自动探测 PATH / 常见路径）。
@@ -166,13 +178,13 @@ https://www.sellersprite.com/v3/ads-insights?q=<ASIN>&marketId=1&interval=week&d
 | 1 | 广告 | 广告词/自然词 | 变体流量对比/关键词反查 (SP+品牌+视频)/自然 | ≥0.5 → ✓ |
 | 2 | 合并评论 | 是否存在除美国外其他地区评论 | 卖家精灵 comment API 的 `market` 参数查多站点 | 非美站点评论数 >0 → ✓ |
 | 3 | Vine | 是否存在 Vine 评论（要真实条数） | `review-analysis/type/US/{asin}` 的 `vine` 字段 | >0 → ✓ |
-| 4 | 刷单 | 近30天留评率 | 近30天评论数 ÷ 近30天销量 | >3% → 疑似；否则未见 |
+| 4 | 刷单 | 近30天留评率 | 近30天评论数 ÷ 近30天销量（**分母优先用「近30天销量(父体)」**，来自插件「变体对比」tab，见 §7.2.2） | >3% → 疑似；否则未见 |
 | 5 | 品牌 | 是否有独立站且售同款 | WebSearch | 有→✓；有但品类不符→△ |
 | 6 | 站外 | 独立站+社媒+红人测评+Deal站 | WebSearch 逐品牌 | 任一有实证→有 |
-| 7 | 老带新 | 该链接是否存在上架更早的 ASIN | 全量数据按 `parent` 分组取最小 `days`（`parent_min`）；本链 `days > parent_min` → ✓ | 存在更早→✓ |
+| 7 | 老带新 | 该链接是否存在上架更早的 ASIN | **首选**：插件「变体对比」tab（`ss_variants.py`）拿父体全部变体 `days`，本链与之比较；无此数据时退回全量数据按 `parent` 分组取最小 `days` | 存在上架更早 ≥31 天→✓；同期(≤30天)→✗ |
 | 8 | 上架时间早 | 上架天数 | 源数据 | ≥1095 天（3年）→ ✓ |
 
-**老带新口径**：从筛选前全量 `all_rows.json` 按 `parent` 分组算组内最小 `days`；本链 `days > parent_min` → 存在更早上架变体 → ✓；否则 ✗（注意筛选后父体组可能不完整，只能得"无更早证据"非绝对结论）。
+**老带新口径**：**首选插件「变体对比」tab**（`ss_variants.py`，见 §7.2.2）拿父体全部变体的 `days`，本链 `days` 与之逐项比较：存在变体 `days > 本链days + 30` → ✓（有上架更早的兄弟变体）；有更早但差距 ≤30 天 → ✗（同期上架，别写"本链最早"）；本链就是最早 → ✗（是老带新主体）。仅当拿不到变体对比数据时，退回从筛选前全量 `all_rows.json` 按 `parent` 分组算组内最小 `days`；本链 `days > parent_min` → ✓（注意筛选后父体组可能不完整，只能得"无更早证据"非绝对结论）。
 
 ### 7.2 卖家精灵评论 API（关键能力）
 
@@ -198,6 +210,46 @@ fetch('/v3/api/review-analysis/comment', {method:'POST',credentials:'include',
 python scripts/ss_review.py --picks picks.json --out reviews.json
 # 输出每个 ASIN: {vine, counts:{US:n,CA:n,...}, non_us:{...}, n30, sales, rate30}
 ```
+
+### 7.2.1 评论 API 实战坑（旅行药盒项目实测，务必先读）
+
+1. **`type/US` 会报 `ERR_LOGIN_ACCOUNT_INCONSISTENT`（插件端与网页端登录账号不一致），Vine 拿不到。**
+   `ss_review.py` 已内置兜底：全量扫描 US 评论条目的 `vine` 布尔字段（pageSize 上限 200，约 4400 条/11 秒），
+   `vine_src` 标记为 `scan`。账号不一致未解决前可用兜底近似，但**判定结论须注明来自扫描**（如 `Vine:✓(扫描N条含M条Vine)`）。
+2. **comment API 的 `total` ≠ Amazon 页面 ratings 数**：Amazon 的"34,111 ratings"含纯星级评分，
+   卖家精灵只索引带文字的评论（可能只有 4,411）。两者口径不同，别当数据错误；用全量扫描算出的 n30
+   与 `trend/detail` 月度评论数一致，可直接用。
+3. **fetch 的 body 只能 `json.dumps` 一次**：写成 `JSON.stringify(json.dumps(...))` 会让 body 变成
+   JSON 字符串而非对象，服务端解析不到参数 → **静默返回 total=0，不报错**。脚本已按此修正。
+   另外「页面渲染出菜单」≠「接口登录态就绪」，脚本已加 `wait_ready()`：先用第一个 ASIN 探测 API
+   真返回数据再批量抓，否则等 5s 重试（最多 120s）。
+
+**⚠ 抓完必须看一眼数字是否全 0** —— 全 0 = 上面第 3 条或登录态掉了，不是"该 ASIN 真没评论"。
+
+**月度评论趋势 API**（判断近30天评论数是否与全量采样一致，可选）：
+```javascript
+fetch('/v3/api/review-analysis/trend/detail?asin=<ASIN>&market=US&parent=undefined', {credentials:'include'})
+```
+
+### 7.2.2 老带新（#7）与刷单（#4）数据源 —— 插件「变体对比」tab（`ss_variants.py`）
+
+Amazon dp 页插件浮窗 → tab **「变体对比(N)」**（不是「变体流量对比」！两个 tab 名字很像），表格每行含
+`变体ASIN / SKU / 价格 / 月销量(父) / 流量词数 / 评分 / 评论数 / FBA / 上架时间(YYYY-MM-DD(N,NNN天))`。
+
+同一面板顶部还有 **`近30天销量(父体)`** —— 这是 **#4 刷单分母的正确口径**（评论是父体共享的，分母也用父体销量）。
+
+老带新判定（阈值 30 天）：
+- 存在变体 `days > 本链days + 30` → ✓（`父体N个变体中M个上架更早,最早X天>本链Y天`）
+- 有更早但差距 ≤30 天 → ✗（`属同期上架`，别写"本链最早"——那是事实错误）
+- 本链就是最早 → ✗（`是老带新主体;其余变体a~b天`）
+
+已封装脚本（含 `Page.bringToFront` + reload 重试，20 个 ASIN 约 8 分钟，断点续采）：
+```
+python scripts/ss_variants.py --picks picks.json --out variants.json
+# → {asin: {days, date, sales30, n_var, variants:[{asin,date,days}, ...]}}
+```
+走这个 tab 前**必须 `Page.bringToFront`**（见 F5），否则扩展不注入；页面加载慢时 `Page.reload` 重试一次。
+实测 360 浏览器失败率约 50%，跑一轮后重跑一次即可补齐（`variants` 为空会自动重试；`--force` 强制重启浏览器）。
 
 ### 7.3 站外核查
 
@@ -248,6 +300,7 @@ python scripts/kdocs_sheet.py verify --file <ID> --ws <ID> --key-col 0 --col 15 
 - **F9 kdocs opType 报错**：只支持 `cell_operation_type_formula/format/merge/picture`，不支持 value。写文本也用 formula op（文本放 `formula` 字段）。
 - **F10 数值列写入后是空的**：formula 写了纯数字字符串（`"8.49"`）。**必须带等号** `=8.49`；用 `get_typed_value` 读回确认。
 - **F11 长文本读回截断到 500 字符**：从源数据文件取，不靠 API。
+- **F12 Bash 的 PATH 被破坏（`dirname`/`cd`/`tail`/`cat` 全 command not found）**：shell 会话状态不跨命令、环境变量在子进程丢失。改用绝对路径的 python，输出重定向到文件再用 python 读回。
 - **F13 批量跑 ASIN 后浏览器崩溃**：每 ASIN 间隔 5~10s，单次 ≤20；备用数据源：关键词反查网页版。
 - **F16 kdocs 图片服务"服务暂时不可用"(500000)**：间歇性。隔几秒重试；持续失败退化为主图直链（见 §4）。
 - **F17 `upload_attachment` 的 object_id 不能用于 DISPIMG**：会 `#REF!`。DISPIMG 需 kdocs 生成的 cell-image 资源 ID（`ID_xxx`），走 picture op/add-row 方式（见 §4）。
@@ -266,4 +319,4 @@ python scripts/kdocs_sheet.py verify --file <ID> --ws <ID> --key-col 0 --col 15 
 
 - kdocs 表格（全部列填完 + 校验通过）。
 - 可视化汇总 HTML（可选，`scripts/gen_html.py`）。
-- 中间数据 JSON：`picks.json` / `reviews.json` / `p_col*.json`。
+- 中间数据 JSON：`picks.json` / `reviews.json` / `variants.json` / `p_col*.json`。
