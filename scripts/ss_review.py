@@ -136,8 +136,41 @@ def ensure_sprite_tab():
                 return d.get('result', {})
 
     tid = call('Target.createTarget', url=SPRITE_HOME)['targetId']
-    time.sleep(10)
+    # ⚠ 只 sleep 固定秒数不够：新开的标签页登录态可能还没渲染完，
+    #   此时发 fetch 会拿到全 0（静默失败，不报错）。必须轮询等页面就绪。
+    sid = call('Target.attachToTarget', targetId=tid, flatten=True)['sessionId']
+
+    def s(method, **params):
+        mid[0] += 1
+        bws.send(json.dumps({'id': mid[0], 'method': method, 'params': params,
+                             'sessionId': sid}))
+        while True:
+            d = json.loads(bws.recv())
+            if d.get('id') == mid[0] and d.get('sessionId') == sid:
+                return d.get('result', {})
+
+    def txt():
+        r = s('Runtime.evaluate',
+              expression='(document.body&&document.body.innerText||"").slice(0,400)',
+              returnByValue=True)
+        return (r.get('result') or {}).get('value') or ''
+
+    ready = False
+    for attempt in range(3):
+        for _ in range(15):          # 每轮最多 30s
+            time.sleep(2)
+            t = txt()
+            # 登录后的 v3 首页会渲染出左侧菜单（"产品库"）；未就绪时 innerText 很短
+            if '产品库' in t or '关键词选品' in t:
+                ready = True
+                break
+        if ready:
+            break
+        s('Page.reload', ignoreCache=False)   # 再刷一次
+        time.sleep(6)
     bws.close()
+    if not ready:
+        raise RuntimeError('sellersprite 页面未就绪（可能未登录），请先在浏览器里登录')
     for t in http('/json/list'):
         if t.get('id') == tid:
             p = urlparse(t['webSocketDebuggerUrl'])
@@ -166,18 +199,33 @@ class Sprite:
                     return {'__err': str(r['exceptionDetails'])[:300]}
                 return r.get('result', {}).get('value')
 
+    def wait_ready(self, asin, timeout=120):
+        """探测评论 API 直到真的返回数据。
+
+        ⚠ 页面 innerText 渲染出菜单 ≠ 接口登录态就绪。只等固定秒数就开抓会
+          拿到全 0（不报错、静默失败）。必须用真实 API 探测。
+        """
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if self.count(asin, 'US'):
+                return True
+            time.sleep(5)
+        raise RuntimeError('卖家精灵评论 API 一直返回空（登录态未就绪？）')
+
     def type_us(self, asin):
         return self.evaljs(
             "(async()=>{const r=await fetch('/v3/api/review-analysis/type/US/%s',"
             "{credentials:'include'});return await r.json();})()" % asin)
 
     def count(self, asin, market, page_size=1):
-        body = json.dumps({'asin': asin, 'market': market,
-                           'pageNum': 1, 'pageSize': page_size})
+        # ⚠ body 只能 dumps 一次：% json.dumps(obj) 是 Python dict → JSON 字面量 → JSON.stringify → body。
+        #   若写成 % json.dumps(json.dumps(obj)) 或 % 已 dumps 的字符串，body 会变成带引号的
+        #   JSON 字符串而非对象，服务端解析不到参数 → 静默返回 total=0，不报错。
+        obj = {'asin': asin, 'market': market, 'pageNum': 1, 'pageSize': page_size}
         c = self.evaljs(
             "(async()=>{const r=await fetch('/v3/api/review-analysis/comment',"
             "{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},"
-            "body:JSON.stringify(%s)});return await r.json();})()" % json.dumps(body))
+            "body:JSON.stringify(%s)});return await r.json();})()" % json.dumps(obj))
         d = (c or {}).get('data') or {}
         return d.get('total', 0) or 0
 
@@ -187,12 +235,11 @@ class Sprite:
         cutoff = (_dt.datetime.now() - _dt.timedelta(days=cover_days)).timestamp() * 1000
         items, total = [], None
         for page in range(1, max_pages + 1):
-            body = json.dumps({'asin': asin, 'market': market,
-                               'pageNum': page, 'pageSize': 100})
+            obj = {'asin': asin, 'market': market, 'pageNum': page, 'pageSize': 100}
             c = self.evaljs(
                 "(async()=>{const r=await fetch('/v3/api/review-analysis/comment',"
                 "{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},"
-                "body:JSON.stringify(%s)});return await r.json();})()" % json.dumps(body))
+                "body:JSON.stringify(%s)});return await r.json();})()" % json.dumps(obj))
             if not c or not c.get('success'):
                 break
             d = c['data']
@@ -252,6 +299,8 @@ def main():
     ensure_browser(exe=args.exe, force=args.force)
     host, port, path = ensure_sprite_tab()
     sp = Sprite(host, port, path)
+    # 先用第一个 ASIN 探测 API 真的有数据，再开始批量抓（否则会全 0）
+    sp.wait_ready(picks[0]['asin'])
 
     state = {}
     if os.path.exists(args.out):
@@ -270,12 +319,49 @@ def main():
         if 'vine' not in rec:
             t = sp.type_us(asin)
             rec['type_us'] = (t or {}).get('data') or {}
-            rec['vine'] = rec['type_us'].get('vine', 0)
+            # type API 会静默失败: {code:'ERR_LOGIN_ACCOUNT_INCONSISTENT', data:null}
+            # 只有 data 里真有 totalReview 才算成功，否则必须走扫描兜底
+            ok = bool(rec['type_us'].get('totalReview'))
+            rec['vine'] = rec['type_us'].get('vine', 0) if ok else None
+            rec['vine_src'] = 'type_api' if ok else None
+        if not rec.get('vine') and rec.get('vine_src') != 'type_api':
+            # type API 常见失败: ERR_LOGIN_ACCOUNT_INCONSISTENT(插件端和网页端登录账号不一致)
+            # 兜底: 全量扫描 US 评论条目的 vine 字段（pageSize 上限 200）
+            # 注意: rec['counts'] 在循环末尾才赋值，这里必须用局部变量 counts
+            total = counts.get('US', 0)
+            vine, seen = 0, 0
+            dates = []
+            page = 1
+            while seen < total and page <= 200:
+                obj = {'asin': asin, 'market': 'US', 'pageNum': page, 'pageSize': 200}
+                r = sp.evaljs(
+                    "(async()=>{const r=await fetch('/v3/api/review-analysis/comment',"
+                    "{method:'POST',credentials:'include',"
+                    "headers:{'Content-Type':'application/json'},"
+                    "body:JSON.stringify(%s)});return await r.json();})()" % json.dumps(obj))
+                d = (r or {}).get('data') or {}
+                its = d.get('items') or []
+                if not its:
+                    break
+                vine += sum(1 for x in its if x.get('vine'))
+                dates += [x['date'] for x in its if x.get('date')]
+                seen += len(its)
+                page += 1
+            rec['vine'] = vine
+            rec['vine_src'] = 'scan'
+            rec['scanned'] = seen
+            rec['full_scan'] = seen >= total
+            if dates and not rec.get('n30'):
+                import datetime as _dt2
+                rec['n30'] = sum(1 for d in dates if
+                                 (datetime.datetime.now() -
+                                  datetime.datetime.fromtimestamp(d / 1000)).days <= 30)
         rec['counts'] = counts
         rec['non_us'] = {k: v for k, v in counts.items() if k != 'US' and v > 0}
         rec['non_us_total'] = sum(rec['non_us'].values())
 
-        if not args.no_comments:
+        # 已全量扫描过就别再采样覆盖 n30（全量更准）
+        if not args.no_comments and rec.get('vine_src') != 'scan':
             items, _ = sp.comments(asin)
             dates = [x['date'] for x in items if x.get('date')]
             n30 = sum(1 for d in dates
