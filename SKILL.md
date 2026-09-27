@@ -31,14 +31,23 @@ Python     : python3（需 openpyxl）
 2. 常见缺失的处理：
    - **openpyxl 未装** → `python -m pip install openpyxl`（或 `setup_env.py --install`）。
    - **kdocs-cli 未找到** → 只要环境有 kdocs MCP（`mcp__jinshanwendang__*`）就不影响，读写表格走 MCP；脚本 `kdocs_sheet.py` 仅在你坚持用 CLI 时才需要装 kdocs-cli。
-   - **CDP 端口 9222 未监听** → 用**独立调试 profile** 启动浏览器（不要依赖默认 profile：新版 Edge/Chrome 用默认 profile 起 CDP 常不生效，默认 profile 下 9222 死活起不来）：
-     ```
-     "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 --user-data-dir=C:\cdp-profile
-     "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\cdp-profile
-     "C:\Users\<你>\AppData\Roaming\360se6\Application\360se.exe" --remote-debugging-port=9222
-     ```
-     Edge/Chrome 必须加 `--user-data-dir=<独立目录>`；360 是单实例锁，需同一进程启动+抓取（见脚本注释）。
-   - **登录态（强前置）** → **独立调试 profile 没有默认 profile 的登录态**，必须让**用户手动扫码/登录一次**卖家精灵 `sellersprite.com/v3/`、Amazon、kdocs。agent 的浏览器接管（`interaction_request_action`）常被系统拒绝，不要依赖它，直接请用户在那个调试窗口登录。
+   - **CDP 端口 9222 未监听** → Chrome/Edge **单实例锁**是主因：浏览器正在运行时已占住「默认 profile」，再带调试端口去启动同一 profile 的进程**不会新建实例**，而是把参数转发给已在跑的旧实例——旧实例没有调试端口，所以 9222 起不来。两种启动法二选一：
+     - **[复用已登录浏览器，保留登录态]**：先**彻底退出所有浏览器窗口**（含后台/启动加速进程），再带调试端口启动**默认 profile**（不加 `--user-data-dir`）：
+       ```
+       "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
+       "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+       ```
+       这样 CDP 连的就是你平时登录卖家精灵/Amazon 的实例，登录态直接可用。
+     - **[独立调试 profile，不打扰在用浏览器（skill 默认）]**：另开独立窗口 + 调试端口，登录态需在该窗口手动登录一次（此后持久保存）：
+       ```
+       "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\cdp-profile
+       "C:\Users\<你>\AppData\Roaming\360se6\Application\360se.exe" --remote-debugging-port=9222
+       ```
+       360 是单实例锁，需同一进程启动+抓取（见脚本注释）。
+   - **登录态（强前置）** → 关键是**CDP 连上的那个实例必须承载登录态**：
+     - 用默认 profile（方案一）→ 已登录，直接用；
+     - 用独立 profile（方案二）→ 无登录态，需用户手动扫码/登录一次卖家精灵 `sellersprite.com/v3/`、Amazon、kdocs（登录态持久保存在该 profile，不用每次重登）。
+     agent 的浏览器接管（`interaction_request_action`）常被系统拒绝，不要依赖它，直接请用户在那个调试窗口登录。
 
 **前置检查（必须全绿才开工）**
 1. `python <skill>/scripts/setup_env.py` 输出无「缺」项。
