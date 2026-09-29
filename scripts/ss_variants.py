@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -31,7 +32,46 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cdp360 import WS  # noqa
 
 PORT = 9222
-DEFAULT_EXE = r'C:\Users\Administrator.DESKTOP-021UVEO\AppData\Roaming\360se6\Application\360se.exe'
+
+
+def _find_browser():
+    """定位可带 --remote-debugging-port 的 Chrome 内核浏览器。
+
+    优先级：环境变量 BROWSER_EXE > PATH(360se/chrome/msedge) > 常见安装路径。
+    """
+    env = os.environ.get('BROWSER_EXE')
+    if env and os.path.exists(env):
+        return env
+    for name in ('360se.exe', 'chrome.exe', 'msedge.exe'):
+        w = shutil.which(name)
+        if w:
+            return w
+    for p in (
+        os.path.expandvars(r'%APPDATA%\360se6\Application\360se.exe'),
+        os.path.expandvars(r'%PROGRAMFILES%\360se6\Application\360se.exe'),
+        os.path.expandvars(r'%PROGRAMFILES(X86)%\360se6\Application\360se.exe'),
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        os.path.expandvars(r'%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe'),
+        os.path.expandvars(r'%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe'),
+    ):
+        if os.path.exists(p):
+            return p
+    return 'chrome'
+
+
+DEFAULT_EXE = _find_browser()
+
+
+def _proc_image(exe):
+    """从 exe 路径取进程映像名（如 '360se.exe'），用于 taskkill /IM。"""
+    return os.path.basename(exe)
+
+
+def _taskkill(exe):
+    subprocess.run(['taskkill', '/F', '/IM', _proc_image(exe)], capture_output=True)
+
+
 _NP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -48,7 +88,7 @@ def port_open(t=0.8):
 def ensure_browser(exe=DEFAULT_EXE, force=False):
     """360 浏览器进程会随 Bash 命令结束被回收 —— 启动必须和抓取写在同一进程内。"""
     if force:
-        subprocess.run(['taskkill', '/F', '/IM', '360se.exe'], capture_output=True)
+        _taskkill(exe)
         time.sleep(3)
     if port_open():
         return
@@ -109,7 +149,7 @@ def main():
     ap.add_argument('--picks')
     ap.add_argument('--out', default='variants.json')
     ap.add_argument('--exe', default=DEFAULT_EXE)
-    ap.add_argument('--force', action='store_true', help='先杀掉已有 360 浏览器再启动')
+    ap.add_argument('--force', action='store_true', help='先杀掉已探测浏览器再启动')
     args = ap.parse_args()
     if args.picks:
         asins = load_asins(args.picks)

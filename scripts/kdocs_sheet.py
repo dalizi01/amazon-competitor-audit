@@ -22,10 +22,30 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 
-KDOCS = os.environ.get('KDOCS_CLI') or r'C:\Users\Administrator.DESKTOP-021UVEO\AppData\Local\kdocs-cli\kdocs-cli.exe'
+
+def _find_kdocs():
+    """定位 kdocs-cli：环境变量 KDOCS_CLI > PATH > 常见安装路径。"""
+    env = os.environ.get('KDOCS_CLI')
+    if env:
+        return env
+    for name in ('kdocs-cli', 'kdocs-cli.exe'):
+        w = shutil.which(name)
+        if w:
+            return w
+    for p in (
+        os.path.expandvars(r'%LOCALAPPDATA%\kdocs-cli\kdocs-cli.exe'),
+        os.path.expandvars(r'%USERPROFILE%\AppData\Local\kdocs-cli\kdocs-cli.exe'),
+    ):
+        if os.path.exists(p):
+            return p
+    return 'kdocs-cli'
+
+
+KDOCS = _find_kdocs()
 
 
 def k(*a):
@@ -71,6 +91,9 @@ def read_col(file_id, ws, col, row_from, row_to):
         print('read failed', out[:300])
         return []
     try:
+        # kdocs-cli 尾部会追加升级提示(如 ⚠ kdocs-cli v2.7.1 available...)，需先剥离，
+        # 否则 json.loads 报 "Extra data" → 解析失败返回 [] → 校验误判。
+        out = out[: out.rfind('}') + 1]
         d = json.loads(out)
         return [(c.get('cellText') or '') for c in d['data']['detail']['rangeData']]
     except Exception as e:

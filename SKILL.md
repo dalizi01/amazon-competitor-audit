@@ -17,7 +17,7 @@ Python     : python3（需 openpyxl）
 脚本目录   : <skill>/scripts/
 ```
 
-**scripts/ 清单（8 个脚本）**
+**scripts/ 清单（7 个脚本）**
 
 | 脚本 | 作用 |
 |---|---|
@@ -283,7 +283,7 @@ python scripts/kdocs_sheet.py verify --file <ID> --ws <ID> --key-col 0 --col 15 
 1. **文本列**（A/B/M/N/O/P）→ `get-range-data` 的 `cellText` 或 `get_typed_value`。
 2. **数值列**（C~L）→ **必须用 `get_typed_value`**（返回 `type=double` + 真实数值）。`get-range-data` 的 `cellText` 对数值单元格**不可靠/常返回 null**，用它校验数值列会误判"没写入"。
 
-**kdocs-cli 输出尾部会追加升级提示**（`⚠ kdocs-cli v2.7.1 available...`），`json.loads` 直接解析会报 "Extra data" → 全部 MISMATCH。解析前剥离：`out = out[: out.rfind('}') + 1]`。
+**kdocs-cli 输出尾部会追加升级提示**（`⚠ kdocs-cli v2.7.1 available...`），`json.loads` 直接解析会报 "Extra data" → 全部 MISMATCH。解析前剥离：`out = out[: out.rfind('}') + 1]`（`kdocs_sheet.py::read_col` 已内置此剥离）。
 
 **行高**（八点列需 8 行高度）：`set-range-width-height`，range 是对象 `{"row_from":1,"row_to":20,"col_from":15,"col_to":15}`，height=2160 twip≈144px。**不要用 auto-fit**（机会点列 350 字会把行撑到 200px+ 拉变形主图列）。auto-fit 的 range 是 A1 字符串（"2:21"），与 set-range-width-height 的对象格式**别混用**。
 

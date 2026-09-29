@@ -84,10 +84,19 @@ def port_open(t=0.8):
         s.close()
 
 
+def _proc_image(exe):
+    """从 exe 路径取进程映像名（如 '360se.exe'），用于 taskkill /IM。"""
+    return os.path.basename(exe)
+
+
+def _taskkill(exe):
+    subprocess.run(['taskkill', '/F', '/IM', _proc_image(exe)], capture_output=True)
+
+
 def ensure_browser(exe=DEFAULT_EXE, force=False):
     """360 浏览器进程会随 Bash 命令结束被回收 —— 启动必须和抓取在同一进程内。"""
     if force:
-        subprocess.run(['taskkill', '/F', '/IM', '360se.exe'], capture_output=True)
+        _taskkill(exe)
         time.sleep(3)
     if port_open():
         return
@@ -99,7 +108,7 @@ def ensure_browser(exe=DEFAULT_EXE, force=False):
         time.sleep(1)
         if port_open():
             return
-    subprocess.run(['taskkill', '/F', '/IM', '360se.exe'], capture_output=True)
+    _taskkill(exe)
     time.sleep(4)
     subprocess.Popen([exe, '--remote-debugging-port=%d' % PORT],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -283,7 +292,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--markets', default=','.join(MARKETS))
     ap.add_argument('--exe', default=DEFAULT_EXE)
-    ap.add_argument('--force', action='store_true', help='先杀掉已有 360 浏览器再启动')
+    ap.add_argument('--force', action='store_true', help='先杀掉已探测浏览器再启动')
     ap.add_argument('--no-comments', action='store_true', help='跳过逐条评论(不统计近30天)')
     args = ap.parse_args()
 
@@ -320,8 +329,9 @@ def main():
             t = sp.type_us(asin)
             rec['type_us'] = (t or {}).get('data') or {}
             # type API 会静默失败: {code:'ERR_LOGIN_ACCOUNT_INCONSISTENT', data:null}
-            # 只有 data 里真有 totalReview 才算成功，否则必须走扫描兜底
-            ok = bool(rec['type_us'].get('totalReview'))
+            # 只有 data 里真有 totalReview 且含 vine 字段才算成功，否则走扫描兜底，
+            # 避免"返回成功但 vine 缺失"被误当作 0 条。
+            ok = bool(rec['type_us'].get('totalReview')) and 'vine' in rec['type_us']
             rec['vine'] = rec['type_us'].get('vine', 0) if ok else None
             rec['vine_src'] = 'type_api' if ok else None
         if not rec.get('vine') and rec.get('vine_src') != 'type_api':
