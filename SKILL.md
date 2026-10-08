@@ -19,7 +19,7 @@ Python     : python3（需 openpyxl）
 脚本目录   : <skill>/scripts/
 ```
 
-**scripts/ 清单（8 个脚本）**
+**scripts/ 清单（9 个脚本）**
 
 | 脚本 | 作用 |
 |---|---|
@@ -30,7 +30,8 @@ Python     : python3（需 openpyxl）
 | `setup_env.py` | 环境自检：Python / openpyxl / kdocs 通道 / CDP / 登录态提示（`--install` 自动装 openpyxl） |
 | `xlsx_fix.py` | 修卖家精灵 xlsx 的 `editAs="undefined"`（`load_workbook_safe`） |
 | `gen_html.py` | 八点判定可视化汇总 HTML |
-| `ss_voc.py` | **评论分析(VOC)采集**：生成/读取评论分析报告，产出「差评点 + 认可点 + 风险 + 根因」→ 供 col14 机会点（见 §6.1） |
+| `ss_voc.py` | **评论分析(VOC)采集（2.0，收费）**：生成/读取评论分析报告，产出「差评点 + 认可点 + 风险 + 根因」→ 供 col14 机会点（见 §6.1） |
+| `ss_ai_report.py` | **插件免费 AI 报告采集（不耗额度）**：dp 页点「生成 AI 分析报告」→ 读面板，产出「口碑速读 + 星级分布 + 好评亮点/差评痛点/买家期待/人群画像/使用场景/购买理由」（见 §6.1 通道 0） |
 
 **可移植配置（不必改代码）**
 - 浏览器路径：环境变量 `BROWSER_EXE` 指定；否则脚本自动探测 360se/chrome/msedge。
@@ -203,9 +204,28 @@ https://www.sellersprite.com/v3/ads-insights?q=<ASIN>&marketId=1&interval=week&d
 ```
 禁止写「有差评」「体验一般」「存在不足」这类**无数据结论**（违反 §10 第 1 条）。
 
-**评论数据通道（按可靠性排序）：**
+**评论数据通道（按竞争力排序）：**
 
-1. **评论分析页 · 属性标签聚类（首选，硬数据）** —— 2026-10-08 实测路径
+0. **★ 插件「生成 AI 分析报告」—— 免费、不占配额、可自动化（2026-10-08 实测打通，优先用它拿差评点）**
+   - **入口**：Amazon dp 页 → 插件浮窗 → tab **「AI评论分析」** → 按钮 **「生成 AI 分析报告」**（旁边另一个按钮是「生成卖家精灵分析报告」，**两者产出完全不同，别点错**）。
+   - **产出（面板内直接渲染，无需跳页）**：**评论总结**（买家口碑速读 + 星级分布 + **6 张卡片：好评亮点 / 差评痛点 / 买家期待 / 人群画像 / 使用场景 / 购买理由**）+ **Alexa原声** + **首页评论原声**。
+   - **⚠ 免费**：面板原文「卖家精灵 AI 评论分析…**功能免费使用**」→ **不消耗** `daily-remaining-quota`（2.0 的 100 次/天）。实测 2.0 额度=0 时仍可生成；生成耗时**十几秒~2 分钟**（远快于 2.0 的 3-5 分钟）。
+   - **⚠ 数据只存在于面板里**：按钮1 的报告**不进入**网页端账号的报告列表（`/v3/api/review-analysis/list` 查不到），直接开其 `details?list=<id>` 也是空白 → **必须从面板 DOM 读 `innerText`**，不要指望接口。
+   - **⚠ 读法（已封装 `scripts/ss_ai_report.py`，推荐直接用）**：
+     ```bash
+     python scripts/ss_ai_report.py --asins B0XXXXXXXX B0YYYYYYYY --out panel_voc.json --keep-raw
+     python scripts/ss_ai_report.py --picks picks.json --out panel_voc.json   # 批量
+     # 输出：{asin: {speed_read, stars{5..1}, low_star_pct, highlights, pain_points,
+     #              expectations, personas, scenarios, reasons}}
+     ```
+     手工流程（脚本内部逻辑）：CDP `navigate(dp)` → **`Page.bringToFront`** → 等 `.tab-name>=6`（扩展注入）→ 点 `AI评论分析` tab → 点 `生成 AI 分析报告` → 轮询等面板出现「评论总结」→ 取面板容器 `innerText`。
+     - 弹窗「评论收集中！…我已知晓」要自动点掉（`/我已知晓/`）。
+     - Amazon 偶发 bot check（正文含「Continue shopping / Continue to site」）→ 点掉后重试；仍不注入（`.tab-name=0`）就 `Page.reload`；reload 多次仍失败 → **换 `/gp/product/<ASIN>` 路径**（实测可解）。
+     - **⚠ 每个 ASIN 用独立标签页**（`Target.createTarget`）：复用同一 target 连续导航在 Amazon 上偶发 CDP 响应超时。
+   - **口径**：面板给的是**定性摘要 + 星级分布百分比**（如 5★68%/4★13%/3★8%/2★6%/1★5%），**没有**按标签的条数/占比。写 col14 时把差评点写成「<痛点描述>（低星 2★+1★ 合计 N%）」，数字取自该报告自己的星级分布，**不得编条数**。
+   - 与通道 1 的关系：**通道 0 免费先行、覆盖全部竞品**；通道 1（2.0）额度有限，留给需要"带条数的标签聚类"的深度分析。
+
+1. **评论分析页 · 属性标签聚类（2.0，收费额度，硬数字）** —— 2026-10-08 实测路径
    - **新版（推荐，无需插件）**：`https://www.sellersprite.com/v3/ai-review-analysis`
      可直接**输入单个 ASIN 生成报告**。操作三步：① 站点选「美国站」→ ② 输入框（`el-input__inner`，`placeholder="请输入单个ASIN 如: B00FLYWNYQ"`）填 ASIN → ③ 点「生成报告」按钮（`button` 内含文本 `生成报告 (消耗10次)`）。
    - **旧版**：`https://www.sellersprite.com/v3/review-analysis?q=<ASIN>` —— 需先经**插件端**（dp 页扩展面板「AI 评论分析」）收集评论建报告，否则页面显示"您暂未创建评论分析报告"、`label` API 返回空数组。
@@ -506,6 +526,15 @@ grid = [tv[i*11:(i+1)*11] for i in range(20)]   # 20 行 × 11 列
       return os.apply(this,arguments);};
     ```
     ⚠ 探测本身也消耗一次配额——所以要挑**本来就缺报告**的 ASIN 来探，探测即产出，不浪费。
+
+- **F28 ★★ 插件两个按钮 = 两种报告，别点错；按钮1 免费且含差评痛点 ★★**（2026-10-08 实测+官方文档）：
+  | 按钮 | 产出 | 是否落网页账号 |
+  |---|---|---|
+  | **「生成 AI 分析报告」** | **评论总结 6 卡（好评亮点/差评痛点/买家期待/人群画像/使用场景/购买理由）+ Alexa原声 + 首页评论原声**，面板内渲染 | ✗（**不**进 `/v3/api/review-analysis/list`，`details?list=` 打开是空白） |
+  | 「生成卖家精灵分析报告」 | 评论星级分布 / 变体评论数 / 评论趋势 / 评论列表 | ✓（如 id=11025693） |
+  - **⚠ 免费**：面板原文「功能免费使用」，**不占** 2.0 的 100 次/天 → 2.0 额度耗尽后仍可用，这是"额度用完还能生成"的真正原因。
+  - **⚠ 我踩过的坑**：曾三次拆解**按钮2** 的报告（11025163 / 11022785 / 11025693），得出"报告里没有差评点"的**错误结论**，并去质疑用户——实际是**点错了按钮**。教训：结论与用户观察冲突时，先怀疑自己取错了数据源，并去查官方文档，别急着下"没有"的判断。
+  - **⚠ 自动化注意**：`.tab-name` 需要先 `Page.bringToFront` 才注入；Amazon bot check（「Continue shopping / Continue to site」）时扩展完全不注入（`.tab-name=0`）→ 点掉重试；弹窗「评论收集中…我已知晓」需自动点掉；报告**不跳新标签页**，就在面板里，读面板容器 `innerText`。
 
 ## 10. 禁止事项
 
