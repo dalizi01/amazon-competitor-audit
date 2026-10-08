@@ -7,6 +7,8 @@ description: 亚马逊竞品分析并填入金山文档（kdocs）「运营难�
 
 标准作业流程。目标产物：一张 N 个竞品 × 16 列的分析表，其中「运营手段」列是按固定 8 个维度做的实证判定。
 
+> **⚠ 开工第一步（强制）**：先跑 `python <skill>/scripts/setup_env.py`（只读自检），检查 Python / openpyxl / kdocs 通道 / CDP 端口 / 登录态。**缺什么它会直接给修复指引**。未全绿不要开始抓数或写表——否则同一个根因会以各种奇怪报错在中途冒出来，比事前自检费时得多。
+
 ## 0. 环境常量（先确认，各机器路径可能不同）
 
 ```
@@ -17,7 +19,7 @@ Python     : python3（需 openpyxl）
 脚本目录   : <skill>/scripts/
 ```
 
-**scripts/ 清单（7 个脚本）**
+**scripts/ 清单（8 个脚本）**
 
 | 脚本 | 作用 |
 |---|---|
@@ -28,6 +30,7 @@ Python     : python3（需 openpyxl）
 | `setup_env.py` | 环境自检：Python / openpyxl / kdocs 通道 / CDP / 登录态提示（`--install` 自动装 openpyxl） |
 | `xlsx_fix.py` | 修卖家精灵 xlsx 的 `editAs="undefined"`（`load_workbook_safe`） |
 | `gen_html.py` | 八点判定可视化汇总 HTML |
+| `ss_voc.py` | **评论分析(VOC)采集**：生成/读取评论分析报告，产出「差评点 + 认可点 + 风险 + 根因」→ 供 col14 机会点（见 §6.1） |
 
 **可移植配置（不必改代码）**
 - 浏览器路径：环境变量 `BROWSER_EXE` 指定；否则脚本自动探测 360se/chrome/msedge。
@@ -72,12 +75,13 @@ Python     : python3（需 openpyxl）
 
 | Step | 内容 | 关键工具 |
 |---|---|---|
+| **0** | **环境自检 + 前置检查（必须全绿才开工，详见 §0）** | `scripts/setup_env.py` |
 | 1 | 从卖家精灵导出 xlsx 筛出 N 个竞品 | `scripts/xlsx_fix.py` + openpyxl |
 | 2 | 建表 + 写基础数据列 | `scripts/kdocs_sheet.py` / kdocs MCP |
 | 3 | 主图嵌入（DISPIMG 单元格内嵌） | kdocs MCP picture op / add-row |
 | 4 | 广告数据（广告组数/SP广告词/自然词） | 卖家精灵网页版 + CDP |
 | 5 | 产品卖点翻译 | 源数据文件 → 翻译 → 写入 |
-| 6 | 机会点（市场洞察） | WebSearch 消费者反馈 |
+| 6 | 机会点（**listing + 评论差评点/可借鉴点**，见 §6.1） | 评论分析页标签聚类 + comment API + WebSearch |
 | 7 | 运营手段八点判定 | 卖家精灵评论 API + WebSearch |
 | 8 | 写入 + 逐行校验 | `scripts/kdocs_sheet.py` |
 
@@ -166,7 +170,100 @@ https://www.sellersprite.com/v3/ads-insights?q=<ASIN>&marketId=1&interval=week&d
 
 **卖点翻译坑**：`get-range-data` 的 cellText 截断到 500 字符。长文本一律从源数据文件（`picks.json` 的 `selling_points`）取，不靠 API 读回。翻译时**保留英文**：品牌名、材质型号（440C/420HC）、认证（TUV）、单位（英寸/盎司/°C）、专有名词。
 
-**机会点**（col14，300~380 字）：①产品是什么（形态/材质/价格/变体数）→ ②为什么卖得好（数据+消费者心理）→ ③可借鉴的 3~5 条动作。来源用 WebSearch 查行业研究/第三方测评/真实买家评价，**要带数据的实证，不编**。
+### 6.1 机会点（col14）：必须「listing + 评论」双源，缺一不可
+
+**结构（三段式，固定，300~400 字）—— 2026-10-08 用户确认口径**：
+① **产品**（形态 / 材质 / 价格 / 变体数 + 基本盘：月销 / BSR / 评分 / 评论数）→ ② **差评点**（逐项带条数与占比 + 根因）→ ③ **可借鉴**（3~5 条动作，每条对应一个差评点或一个已被验证的有效设计）。
+
+**三段式模板（照此写，勿自创结构）**：
+```
+产品：<形态/材质/价格/变体数>。基本盘：月销 N 件、小类 BSR 第 N、N 天累积 N 评分。
+差评点：<标签> N 条(NN.N%)、<标签> N 条(NN.N%)、……；根因：<一句话>。
+可借鉴：① <动作>；② <动作>；③ <动作>；④ <动作>；⑤ <动作>。
+```
+三段**均须带真实数字**，数字取自 `voc_insight.json`；差评点按条数降序取 Top 5~9 项。
+
+**⚠ 只从 listing 写机会点是错的**——listing 是**卖家自我主张**（王婆卖瓜），评论才是**买家真实体验**。两个源都要查：
+
+| 源 | 取什么 | 回答什么问题 |
+|---|---|---|
+| **A. Listing** | 五点描述 / 亮点 / A+ / 变体矩阵 / 价格 / 尺寸 | 卖家**主张**解决了什么 |
+| **B. 评论** | ① **差评点**（1~3 星 + 属性标签聚类）② **正面高频词** | 买家**真实**吐槽什么、反复夸什么 |
+
+**评论分析必须产出两类结论：**
+
+- **差评点 —— 找"坑"（要规避）**：竞品被反复吐槽什么（盖子易弹开 / 药片受潮 / 标识磨损 / 尺寸放不进包 / 药片混串）。
+  → 用途：**我们做同款时不要重复这些缺陷**；若我们能解决，它就是差异化卖点。
+- **可借鉴点 —— 找"对的事"（要继承）**：正面评论反复夸什么（同侧开盖 / 可拆单日盒 / 硅胶密封圈 / 大出药口）。
+  → 用途：这些是**已被市场验证的有效设计**，直接抄作业，降低试错成本。
+
+**⚠ 差评点必须带实证数字，且必须是本条 ASIN 自身的评论数据**（不可回溯的行业级聚合数不得冒充本品结论），格式：
+```
+差评点：体积过大 76 条(15.2%)、填装药物繁琐 39 条(7.8%)、开盖困难 35 条(7.0%)……（样本 n=499）
+```
+禁止写「有差评」「体验一般」「存在不足」这类**无数据结论**（违反 §10 第 1 条）。
+
+**评论数据通道（按可靠性排序）：**
+
+1. **评论分析页 · 属性标签聚类（首选，硬数据）** —— 2026-10-08 实测路径
+   - **新版（推荐，无需插件）**：`https://www.sellersprite.com/v3/ai-review-analysis`
+     可直接**输入单个 ASIN 生成报告**。操作三步：① 站点选「美国站」→ ② 输入框（`el-input__inner`，`placeholder="请输入单个ASIN 如: B00FLYWNYQ"`）填 ASIN → ③ 点「生成报告」按钮（`button` 内含文本 `生成报告 (消耗10次)`）。
+   - **旧版**：`https://www.sellersprite.com/v3/review-analysis?q=<ASIN>` —— 需先经**插件端**（dp 页扩展面板「AI 评论分析」）收集评论建报告，否则页面显示"您暂未创建评论分析报告"、`label` API 返回空数组。
+   - **⚠ 消耗配额**：生成 1 个报告 = **10 次**。查余额 `GET /v3/api/ai-analysis/daily-remaining-quota`（实测 **100/天** → **每天最多 10 个 ASIN**）。20 个竞品要分 2 天，**先算配额再动手**。
+   - **⚠ 异步**：提交后状态 `PREPARING`（页面提示"预计 3–5 分钟"），任务在**服务端**跑，**浏览器关了也继续**；读数据前必须轮询等 `status` 完成。
+   - **报告列表**：`GET /v3/api/review-analysis/list?market=US&pageSize=500`（**`asin`/`q` 参数被忽略**，这是"我的报告列表"不是查询接口）。每条含 `rating / ratings / reviews / firstReviewDate / lastReviewDate / analysisTime / status`。
+   - **VOC / 标签数据**：`POST /v3/api/review-voc/list`（**必须 POST**，GET 返回 405）；报告未完成时返回 `total:0`。相关：`/v3/api/review-analysis/label`（返回 `marketList` 12 站点 + `labelList`）、`/v3/api/review-analysis/label/list`。
+   - ⚠ 该功能需**登录**（实测账号 XY556688 可用）；游客态被拦到落地页。
+2. **comment API · 星级与时间分布（辅助，无需额外权限）**
+   `POST /v3/api/review-analysis/comment`，items 每条含 `star`(1~5) / `date` / `vine` / `verified` / `market` / `skus` / `author`。
+   → 可算**低星占比**、**差评时间趋势**（判断某缺陷是否已在新批次修复——若近期仍集中出现，说明**尚未修复，是可打的空档**）。
+   ⚠ 该接口返回**结构化元数据，不含评论正文**——要原文得从评论分析页或 dp 页取。
+3. **WebSearch**：行业研究 / 第三方测评 / 论坛，做市场规模与趋势背书（可量化最好，如 CAGR）。
+
+**写作要点**：① 段用基本盘数据说明"这款为什么值得研究"；② 段**逐项列差评点，每项必须带条数**——差评点就是我们要抢的空档；③ 段每条可借鉴动作都要**挂钩②段的某一个差评点**（如"铰链加加强筋并承诺开合次数——对应 33 条断裂风险"），让结论可执行，而不是泛泛而谈。
+
+### 6.2 评论分析(VOC)脚本与数据结构 —— 2026-10-08 全链路实测打通
+
+**✅ 已封装脚本 `scripts/ss_voc.py`（推荐直接用，勿手写一遍）**
+```bash
+# 只读已有报告（不消耗配额，秒级）
+python scripts/ss_voc.py --asins B0BQJ2XZWF --out voc_insight.json
+# 报告不存在时提交生成（⚠ 消耗 10 次配额/个）
+python scripts/ss_voc.py --picks picks.json --create --out voc_insight.json
+```
+实测输出：
+```
+配额: 90
+[B0BQJ2XZWF] 已有报告 id=31781 状态=COMPLETED
+[B0BQJ2XZWF] 差评点 9 项 [('体积过大',76), ('填装药物繁琐',39), ('开盖困难',35)]
+[B0BQJ2XZWF] 认可点 4 项 [('容量充足',95), ('单日盒可拆卸',84), ('双重锁定稳固',53)]
+```
+脚本内置 raw-socket 版 `get_browser_ws_url`（规避 F24 的 stdin 阻塞），产出 `voc_insight.json`。
+
+**数据结构**：`POST /v3/api/review-voc/task-detail` body `{"id":"<报告id>"}` → `data.data` 含 **6 个子 JSON**，值都是**转义 JSON 字符串，需二次 `json.loads`**：
+
+| 子 JSON | 关键内容 | 用途 |
+|---|---|---|
+| **`aggregationsJson`** | **`negative_tag_distribution`（差评点+条数）**、`positive_tag_distribution`、`risk_tag_distribution`、`topic/rating/sentiment/scenario/journey_stage/category_specific_distribution` | **差评点 & 可借鉴点的直接来源（带数字）** |
+| **`reportJson`** | `negative_root_causes`（差评根因：type/title/summary/cause分析）、`insights`、`usage_context_insights`（who/environment/task/goal/正负信号）、`opinion_divergences`（评价分歧）、`low_sample_clues`、`summary`（one_sentence/top_positive/top_negative/biggest_risks/main_scenarios） | 定性归因 + 场景洞察 |
+| **`taggedReviewsJson`** | 逐条打标评论：`{review_id, rating, sentiment, topic_tags, journey_stage_tags, positive_tags, negative_tags, scenario_tags, risk_tags}` | 可自行统计低星占比、按标签筛评论 |
+| **`evidenceSlicesJson`** | 每标签 `{tag, polarity, total_count, review_ids, selected_review_ids, slices}` | **可追溯到原文评论（写"查看证据"用）** |
+| `tagLibraryJson` | `dynamic_tag_library` | 标签体系 |
+| `resultJson` | `product_info`（asin/title/brand/price/rating/ratings/features/overviews）、`data_quality`（total_raw/total_valid_reviews/verified/image/video_count）、`degraded` / `degraded_reason`、`analysis_scope` | 元信息与数据质量 |
+
+相关端点（全部在 `sellersprite.com` 域、`credentials:'include'`）：
+| 端点 | 方法 | body / 说明 |
+|---|---|---|
+| `/v3/api/review-voc/list` | POST | `{asin, market}` 或 `{"ids":["<id>"]}` — 报告列表（含 `status`） |
+| `/v3/api/review-voc/batch-get-report` | POST | **`{"ids":[<int>]}`** — 仅返回 `{id, ready}`，用于轮询 |
+| `/v3/api/review-voc/task-detail` | POST | **`{"id":"<字符串>"}`** — 报告全量数据（上表 6 个子 JSON） |
+| `/v3/api/review-voc/reviews` | POST | `{asin:"<父ASIN>", market, reviewIds:[...]}` — 评论原文 |
+| `/v3/api/ai-analysis/daily-remaining-quota` | GET | 当日剩余配额 |
+| `/v3/api/review-analysis/label` | GET | `marketList`（12 站点）+ `labelList` |
+
+⚠ **`degraded: true` 的含义**：本次为**降级分析**（如 `degraded_reason: tagback_review_id_integrity_failed`）。数据仍完整可用，但**写进 col14 时必须注明**样本口径（如"本次分析样本 499 条"）。
+
+⚠ **报告详情页**（人工核对用）：`/v3/ai-review-analysis/details?list=<id>&asin=<ASIN>`。
 
 ## 7. Step 7：运营手段八点判定（核心）
 
@@ -249,6 +346,15 @@ Amazon dp 页插件浮窗 → tab **「变体对比(N)」**（不是「变体流
 python scripts/ss_variants.py --picks picks.json --out variants.json
 # → {asin: {days, date, sales30, n_var, variants:[{asin,date,days}, ...]}}
 ```
+
+**⚠ `--picks` 要求每条含小写 `asin` 键**。源表 dump 出来通常是大写 `ASIN`，直接喂会报 `KeyError: 'asin'`（脚本内按 `d['asin']` 取）。先归一化：
+```python
+std = [{'asin': d['ASIN'], 'brand': d.get('品牌',''), 'price': d.get('price_n'),
+        'sales': int(float(d.get('sales_n') or 0))} for d in picks]
+json.dump(std, open('picks_std.json','w',encoding='utf-8'), ensure_ascii=False)
+```
+`gen_html.py` 的 `--picks` 同样要求 `asin/brand/price/sales` 小写键，可复用这份 `picks_std.json`。
+
 走这个 tab 前**必须 `Page.bringToFront`**（见 F5），否则扩展不注入；页面加载慢时 `Page.reload` 重试一次。
 实测 360 浏览器失败率约 50%，跑一轮后重跑一次即可补齐（`variants` 为空会自动重试；`--force` 强制重启浏览器）。
 
@@ -267,6 +373,8 @@ python scripts/ss_variants.py --picks picks.json --out variants.json
 判定规则：
 - 5 项中**命中 ≥2 →** `品牌:✓(命中N项:5-1/5-2/...)`；
 - **命中 <2 →** `品牌:✗(仅命中N项...)`。
+
+**⚠ 5-1 解析关键词反查页的锚点选择**：parse 时**不要拿页面标题做锚点**——标题里本身就含品牌名，会导致"每页都命中"的假阳性。应以 **「高频词」区域**为起点向下切出流量词列表，再逐条判断是否含品牌名。
 
 注意：**#5 品牌五维 与 #6 站外 是两个独立判定**。5-3 站外自然推荐、5-5 品牌独立站虽然也走 WebSearch，但只作为「品牌效应」的证据之一；#6 站外的四维判定（§7.3）口径独立，互不影响。
 
@@ -316,6 +424,17 @@ python scripts/kdocs_sheet.py verify --file <ID> --ws <ID> --key-col 0 --col 15 
 1. **文本列**（A/B/M/N/O/P）→ `get-range-data` 的 `cellText` 或 `get_typed_value`。
 2. **数值列**（C~L）→ **必须用 `get_typed_value`**（返回 `type=double` + 真实数值）。`get-range-data` 的 `cellText` 对数值单元格**不可靠/常返回 null**，用它校验数值列会误判"没写入"。
 
+**⚠ `get-typed-value` 的 range 是 A1 字符串（`"C2:M21"`），不是 `{row_from,...}` 对象** —— 传对象会报 `range 为必填`。注意这与 `set-range-width-height`（对象）**格式相反**，别混用。
+```json
+{"file_id":"<ID>","worksheet_id":2,"range":"C2:M21"}
+```
+返回的 `typedValues` 是**行主序一维数组**，按 C→M 每行 11 个顺排，需自行切分：
+```python
+tv = json.loads(out[:out.rfind('}')+1])['data']['typedValues']
+grid = [tv[i*11:(i+1)*11] for i in range(20)]   # 20 行 × 11 列
+```
+比对口径：`abs(got - expect) < 1e-6` **且** `type == "double"`。旅行药盒项目实测应达 **220/220（20 行 × 11 列）全一致**才判通过。
+
 **kdocs-cli 输出尾部会追加升级提示**（`⚠ kdocs-cli v2.7.1 available...`），`json.loads` 直接解析会报 "Extra data" → 全部 MISMATCH。解析前剥离：`out = out[: out.rfind('}') + 1]`（`kdocs_sheet.py::read_col` 已内置此剥离）。
 
 **行高**（八点列需 8 行高度）：`set-range-width-height`，range 是对象 `{"row_from":1,"row_to":20,"col_from":15,"col_to":15}`，height=2160 twip≈144px。**不要用 auto-fit**（机会点列 350 字会把行撑到 200px+ 拉变形主图列）。auto-fit 的 range 是 A1 字符串（"2:21"），与 set-range-width-height 的对象格式**别混用**。
@@ -337,6 +456,56 @@ python scripts/kdocs_sheet.py verify --file <ID> --ws <ID> --key-col 0 --col 15 
 - **F13 批量跑 ASIN 后浏览器崩溃**：每 ASIN 间隔 5~10s，单次 ≤20；备用数据源：关键词反查网页版。
 - **F16 kdocs 图片服务"服务暂时不可用"(500000)**：间歇性。隔几秒重试；持续失败退化为主图直链（见 §4）。
 - **F17 `upload_attachment` 的 object_id 不能用于 DISPIMG**：会 `#REF!`。DISPIMG 需 kdocs 生成的 cell-image 资源 ID（`ID_xxx`），走 picture op/add-row 方式（见 §4）。
+- **F18 `get-typed-value` 报「range 为必填」**：range 必须传 **A1 字符串**（`"C2:M21"`），不是 `{row_from,...}` 对象。注意这与 `set-range-width-height`（对象）、`auto-fit`（A1 字符串 `"2:21"`）各不相同，**三处格式勿混用**（见 §8）。
+- **F19 picture op 返回 `code:0` 但读回"像没落格"**：用 `get-range-data` 的 `cellText` 去匹配 `=DISPIMG("ID_xxx",1)` **会假阴性**（拼接/转义差异）。**以 `isCellPic == true` 为准**；仍存疑就单行重写该 picture op 再复读一次。
+- **F20 `set-range-width-height` 只想调行高**：`width` / `height` **至少传一个**即可；**只传 `height` 不会改列宽**（安全）。反之若同时传 `width`，会连带改列宽——主图列 width=2160 是刻意设的，别在改行高时误传。
+- **F21 源表 dump 漏列 → 整列全 None**：`dump_full.py` 的 `NEED` 列表必须与目标表 16 列一一对齐（尤其易漏 **产品卖点（五点描述）**）。dump 完先断言每列非空率，别等写库才发现整列空。
+- **F22 拿不到目标文档的分享链接**：若目标表在**团队/他人空间**，OAuth 账号的 `drive list-my-files` 树里检索不到它（遍历返回空 items），只有 `file_id` 能直连读写。**这不影响填表**（sheet 系列 API 只认 `file_id`），别为此卡住；交付时不硬编 URL，改为告知用户文件名 + `file_id`。
+- **F23 评论分析页被拦到落地页**：游客态或账号无套餐时会被重定向到落地页。**优先走新版** `v3/ai-review-analysis`（可直接输 ASIN 生成，见 §6.1 通道 1）；旧版 `v3/review-analysis` 的入口是 dp 页扩展面板的「AI 评论分析」按钮（**注意不是 `v3/rs`，那个路径是错的**）。**若确实拿不到**：差评点退化为「comment API 星级分布 + 低星时间趋势」+ WebSearch 第三方测评，**并在结论里注明数据源等级**，不得因此编数字。
+- **F24 ★★ `get_browser_ws_url` 在非交互 stdin 下永久阻塞（最难查的坑）★★**：`cdp360.get_browser_ws_url()` 会先尝试 `sys.stdin.read()`（为适配 sandbox 下"curl 管道喂 JSON"的姿势）。若在 Bash 工具里写成 `python script.py 2>&1 | tee log`，**stdin 是管道且无数据也无 EOF** → `read()` **永久挂起**：脚本无任何输出、最终被 SIGTERM 杀掉，看起来像"卡在启动浏览器"，极易误判。
+  **两种解法**：
+  ① 命令加 `< /dev/null`（stdin 立即 EOF，转走 urllib 分支）；
+  ② 脚本内 monkeypatch 成 **raw socket 版**（sandbox 下最稳，不依赖 stdin/urllib）：
+  ```python
+  cdp360.get_browser_ws_url = _ws_url      # 用 socket 发 GET /json/version 取 webSocketDebuggerUrl
+  ```
+  ⚠ raw socket 版**不能等 EOF**——CDP 常 keep-alive，`recv()` 会超时；必须解析 `Content-Length` 后定量读取 body。
+- **F25 sandbox 下能启动 GUI 浏览器，但有前提**：Python `subprocess.Popen(360se.exe, '--remote-debugging-port=9222')` 在 sandbox 里**可用**（实测 1 秒端口就绪）。但**启动与抓取必须在同一条 Bash 命令/同一进程内**（命令一结束，浏览器进程即被回收）——这也是 `ensure_browser()` 存在的理由。
+- **F26 ★★ `POST /v3/api/review-voc/list` 忽略一切过滤参数 —— 会把同一份报告写到多个 ASIN 上 ★★**（2026-10-08 实测）：该端点**不看** `asin` / `asinList` / `asins` / `market` 任何一个，**永远返回账号下的全部报告**（`data.items`），默认 `size:20`。实测用 9 个**不同** ASIN 去查，全部返回同一份 `id=31781`（B0BQJ2XZWF 的报告）。若按 `items[0]` 取"该 ASIN 的报告"，**9 行会写出完全相同的 col14 文案**，而且 `status=COMPLETED` 会让脚本以为"已有报告、无需创建"，**静默跳过配额消耗，全程不报错**——是最危险的一类错误。
+  - **正确做法**：拉全量再**客户端按 asin 精确匹配**
+    ```python
+    def find_report(s, asin):
+        d = api(s, '/v3/api/review-voc/list', {'page': 1, 'size': 200}, n=2000000)
+        for it in ((d.get('data') or {}).get('items') or []):
+            if (it.get('asin') or '').strip().upper() == asin.strip().upper():
+                return it
+        return None
+    ```
+  - `ss_voc.py` 已按此修复（新增 `list_reports()` + 精确匹配版 `find_report()`）。
+  - **通用教训**：凡"查询类"端点拿到结果，**必须核对返回对象里的业务键（asin/sku/id）是否与入参一致**，不能假设服务端做了过滤。这与 §10 第 3 条同源——写入前的每一环都要能自证。
+- **F27 ★ 用 UI 点击创建 VOC 报告成功率只有 ~50%，必须改直调 API ★**（2026-10-08 实测）：原 `create_report()` 走页面 UI（选站点 → 填 ASIN → 点「生成报告」），连续批量创建时 **9 次尝试只建成 5 个**。失败形态极隐蔽：`el-select` 下拉与输入框回填在连续操作中丢事件，按钮点了但请求根本没发出去 → **配额不扣、报告不建、脚本不报错**（因为 `find_report` 拿不到 id 只打印空字符串）。逐次失败是无规律的（成功/失败交替），不是"第一次之后全失败"。
+  - **真实接口**（用 `window.fetch` / `XMLHttpRequest.prototype` 钩子抓取所得）：
+    ```
+    POST /v3/api/review-voc/new-task    body: {"asin":"B0XXXXXXXX","market":"US"}
+    → {"code":"OK","message":"成功","data":31857,"success":true}   # data 即 report_id
+    ```
+  - **同时修正的两个参数细节**：
+    - `list` 的真实 body 是 `{"keyword":"","market":"","pageSize":200,"pageNum":1,"labelIdList":[]}`
+    - `batch-get-report` 站点实际传**字符串** id：`{"ids":["31855","31854"]}`
+  - **新建报告进列表有数秒延迟**：`new-task` 返回 id 后立刻查 `list` 可能查不到，需重试 3~6 次（每次间隔 3s）。
+  - **抓接口的通用姿势**（任何"页面点击才有、又找不到文档"的操作都适用）：注入钩子 → 手动点一次 → 读 `window.__cap`
+    ```javascript
+    window.__cap=[]; const of=window.fetch;
+    window.fetch=function(){var a=arguments[0],b=arguments[1]||{};
+      window.__cap.push({u:(typeof a==='string')?a:(a&&a.url),m:b.method,b:String(b.body||'')});
+      return of.apply(this,arguments);};
+    var oo=XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return oo.apply(this,arguments);};
+    var os=XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send=function(b){window.__cap.push({u:this.__u,m:this.__m,b:String(b||'')});
+      return os.apply(this,arguments);};
+    ```
+    ⚠ 探测本身也消耗一次配额——所以要挑**本来就缺报告**的 ASIN 来探，探测即产出，不浪费。
 
 ## 10. 禁止事项
 
@@ -347,9 +516,12 @@ python scripts/kdocs_sheet.py verify --file <ID> --ws <ID> --key-col 0 --col 15 
 5. 禁止 auto-fit 长文本表（会拉变形主图列）。
 6. 禁止数值列不带等号写入（会空但报成功）。
 7. 禁止用 `get-range-data` 校验数值列。
+8. 禁止**只凭 listing** 写机会点——必须叠加评论分析，产出「**差评点（带实证数字）+ 可借鉴点**」（见 §6.1）。listing 是卖家自夸，评论才是买家实感。
+9. 禁止**假设查询接口按入参过滤**——拿到列表结果必须核对返回对象里的业务键（`asin`/`sku`/`id`）与入参一致，再往下用（见 F26 的血案）。
+10. 禁止用行业级/同类头部**聚合数**冒充本品结论——差评点条数必须来自该 ASIN 自己的评论样本（`voc_insight.json`），保证可回溯。
 
 ## 11. 交付物
 
 - kdocs 表格（全部列填完 + 校验通过）。
 - 可视化汇总 HTML（可选，`scripts/gen_html.py`）。
-- 中间数据 JSON：`picks.json` / `reviews.json` / `variants.json` / `p_col*.json`。
+- 中间数据 JSON：`picks.json` / `reviews.json` / `variants.json` / **`voc_insight.json`**（评论洞察：各 ASIN 的**差评点 / 认可点 / 风险 / 根因**，由 `scripts/ss_voc.py` 产出，供 col14 使用）/ `p_col*.json`。
